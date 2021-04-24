@@ -29,7 +29,7 @@ use crate::sign;
 use crate::verify;
 use crate::{cipher, SupportedCipherSuite};
 #[cfg(feature = "quic")]
-use crate::{conn::Protocol, msgs::base::PayloadU16, quic};
+use crate::{msgs::base::PayloadU16, quic};
 
 use super::hs::ClientContext;
 use crate::client::common::ServerCertDetails;
@@ -1004,7 +1004,7 @@ impl hs::State for ExpectFinished {
 
         #[cfg(feature = "quic")]
         {
-            if cx.common.protocol == Protocol::Quic {
+            if cx.common.is_quic() {
                 cx.common.quic.traffic_secrets = Some(quic::Secrets {
                     client: write_key,
                     server: read_key,
@@ -1059,7 +1059,7 @@ impl ExpectTraffic {
             value.set_max_early_data_size(sz);
             #[cfg(feature = "quic")]
             {
-                if cx.common.protocol == Protocol::Quic && sz != 0 && sz != 0xffff_ffff {
+                if cx.common.is_quic() && sz != 0 && sz != 0xffff_ffff {
                     return Err(Error::PeerMisbehavedError(
                         "invalid max_early_data_size".into(),
                     ));
@@ -1073,9 +1073,7 @@ impl ExpectTraffic {
 
         #[cfg(feature = "quic")]
         {
-            if let (Protocol::Quic, Some(ref quic_params)) =
-                (cx.common.protocol, &cx.common.quic.params)
-            {
+            if let (true, Some(ref quic_params)) = (cx.common.is_quic(), &cx.common.quic.params) {
                 PayloadU16::encode_slice(quic_params, &mut ticket);
             }
         }
@@ -1100,7 +1098,7 @@ impl ExpectTraffic {
     ) -> Result<(), Error> {
         #[cfg(feature = "quic")]
         {
-            if let Protocol::Quic = common.protocol {
+            if common.is_quic() {
                 common.send_fatal_alert(AlertDescription::UnexpectedMessage);
                 let msg = "KeyUpdate received in QUIC connection".to_string();
                 warn!("{}", msg);
