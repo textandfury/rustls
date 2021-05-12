@@ -2051,6 +2051,61 @@ fn sni_resolver_works() {
 }
 
 #[test]
+fn mut_interior_sni_resolver_works() {
+    let kt = KeyType::RSA;
+    let resolver = Arc::new(rustls::ServerCertResolverUsingSniWithMutInterior::new());
+    let signing_key = sign::RsaSigningKey::new(&kt.get_key()).unwrap();
+    let signing_key: Arc<dyn sign::SigningKey> = Arc::new(signing_key);
+
+    assert!(resolver.remove("localhost").is_none());
+
+    resolver
+        .add(
+            "localhost",
+            sign::CertifiedKey::new(kt.get_chain(), signing_key.clone()),
+        )
+        .unwrap();
+
+    let mut server_config = make_server_config(kt);
+    server_config.cert_resolver = resolver.clone();
+    let server_config = Arc::new(server_config);
+
+    let mut server1 = ServerConnection::new(&server_config);
+    let mut client1 =
+        ClientConnection::new(&Arc::new(make_client_config(kt)), dns_name("localhost")).unwrap();
+    let err = do_handshake_until_error(&mut client1, &mut server1);
+    assert_eq!(err, Ok(()));
+
+    let mut server2 = ServerConnection::new(&server_config);
+    let mut client2 =
+        ClientConnection::new(&Arc::new(make_client_config(kt)), dns_name("notlocalhost")).unwrap();
+    let err = do_handshake_until_error(&mut client2, &mut server2);
+    assert_eq!(
+        err,
+        Err(ErrorFromPeer::Server(Error::General(
+            "no server certificate chain resolved".into()
+        )))
+    );
+
+    assert!(resolver.remove("localhost").is_some());
+    let mut client3 =
+        ClientConnection::new(&Arc::new(make_client_config(kt)), dns_name("localhost")).unwrap();
+    let err = do_handshake_until_error(&mut client3, &mut server1);
+    assert_eq!(err, Err(ErrorFromPeer::Server(Error::DecryptError)));
+
+    let mut client4 =
+        ClientConnection::new(&Arc::new(make_client_config(kt)), dns_name("localhost")).unwrap();
+    let mut server4 = ServerConnection::new(&server_config);
+    let err = do_handshake_until_error(&mut client4, &mut server4);
+    assert_eq!(
+        err,
+        Err(ErrorFromPeer::Server(Error::General(
+            "no server certificate chain resolved".into()
+        )))
+    );
+}
+
+#[test]
 fn sni_resolver_rejects_wrong_names() {
     let kt = KeyType::RSA;
     let mut resolver = rustls::ResolvesServerCertUsingSni::new();
@@ -3465,7 +3520,6 @@ fn test_client_sends_helloretryrequest() {
     // but server only accepts x25519, so a HRR is required
     let mut server_config = make_server_config(KeyType::RSA);
     server_config.kx_groups = vec![&rustls::kx_group::X25519];
-
 
     let (mut client, mut server) = make_pair_for_configs(client_config, server_config);
 

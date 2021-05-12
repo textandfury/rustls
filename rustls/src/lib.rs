@@ -307,8 +307,10 @@ pub use crate::msgs::enums::CipherSuite;
 pub use crate::msgs::enums::ProtocolVersion;
 pub use crate::msgs::enums::SignatureScheme;
 pub use crate::server::builder::{ServerConfigBuilder, ServerConfigBuilderWithClientAuth};
-pub use crate::server::handy::ResolvesServerCertUsingSni;
 pub use crate::server::handy::{NoServerSessionStorage, ServerSessionMemoryCache};
+pub use crate::server::handy::{
+    ResolvesServerCertUsingSni, ServerCertResolverUsingSniWithMutInterior,
+};
 pub use crate::server::StoresServerSessions;
 pub use crate::server::{ClientHello, ProducesTickets, ResolvesServerCert};
 pub use crate::server::{ServerConfig, ServerConnection};

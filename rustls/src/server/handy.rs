@@ -6,7 +6,7 @@ use crate::server::ClientHello;
 use crate::sign;
 
 use std::collections;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 
 /// Something which never stores sessions.
 pub struct NoServerSessionStorage {}
@@ -150,10 +150,7 @@ impl ResolvesServerCertUsingSni {
     /// it's not valid for the supplied certificate, or if the certificate
     /// chain is syntactically faulty.
     pub fn add(&mut self, name: &str, ck: sign::CertifiedKey) -> Result<(), Error> {
-        let checked_name = webpki::DnsNameRef::try_from_ascii_str(name)
-            .map_err(|_| Error::General("Bad DNS name".into()))?;
-
-        ck.cross_check_end_entity_cert(Some(checked_name))?;
+        crosscheck(name, &ck)?;
         self.by_name
             .insert(name.into(), Arc::new(ck));
         Ok(())
@@ -171,6 +168,75 @@ impl server::ResolvesServerCert for ResolvesServerCertUsingSni {
             None
         }
     }
+}
+
+/// Works almost like `ResolvesServerCertUsingSni` except it allows runtime
+/// modifications of its inner `sign::CertifiedKey` store using interior
+/// mutability.
+pub struct ServerCertResolverUsingSniWithMutInterior {
+    mut_interior: RwLock<ResolvesServerCertUsingSni>, // RwLock because reads >> writes
+}
+
+impl ServerCertResolverUsingSniWithMutInterior {
+    /// Create a new and empty (ie, knows no certificates) resolver.
+    pub fn new() -> Self {
+        Self {
+            mut_interior: RwLock::new(ResolvesServerCertUsingSni::new()),
+        }
+    }
+
+    /// Add a new `sign::CertifiedKey` to be used for the given SNI `name`.
+    ///
+    /// This function fails if `name` is not a valid DNS name, or if
+    /// it's not valid for the supplied certificate, or if the certificate
+    /// chain is syntactically faulty.
+    ///
+    /// Note `&self` as first argument because of interior (only) mutability.
+    pub fn add(&self, name: &str, ck: sign::CertifiedKey) -> Result<(), Error> {
+        crosscheck(name, &ck)?;
+
+        let mut resolver = self
+            .mut_interior
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        resolver
+            .by_name
+            .insert(name.into(), Arc::new(ck));
+
+        Ok(())
+    }
+
+    /// Remove the `rustls::sign::CertifiedKey` given by `name` from the
+    /// underlying store.
+    ///
+    /// `None` returned means no-op, while `Some(sign::CertifiedKey)` means
+    /// that key was removed.
+    ///
+    /// Note `&self` as first argument because of interior (only) mutability.
+    pub fn remove(&self, name: &str) -> Option<Arc<sign::CertifiedKey>> {
+        let mut resolver = self
+            .mut_interior
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        resolver.by_name.remove(name.into())
+    }
+}
+
+impl server::ResolvesServerCert for ServerCertResolverUsingSniWithMutInterior {
+    fn resolve(&self, client_hello: ClientHello) -> Option<Arc<sign::CertifiedKey>> {
+        let resolver = self
+            .mut_interior
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        resolver.resolve(client_hello)
+    }
+}
+
+fn crosscheck(name: &str, ck: &sign::CertifiedKey) -> Result<(), Error> {
+    let checked_name = webpki::DnsNameRef::try_from_ascii_str(name)
+        .map_err(|_| Error::General("Bad DNS name".into()))?;
+    ck.cross_check_end_entity_cert(Some(checked_name))?;
+    Ok(())
 }
 
 #[cfg(test)]
