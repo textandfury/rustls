@@ -150,7 +150,9 @@ impl ResolvesServerCertUsingSni {
     /// it's not valid for the supplied certificate, or if the certificate
     /// chain is syntactically faulty.
     pub fn add(&mut self, name: &str, ck: sign::CertifiedKey) -> Result<(), Error> {
-        crosscheck(name, &ck)?;
+        let checked_name = webpki::DnsNameRef::try_from_ascii_str(name)
+            .map_err(|_| Error::General("Bad DNS name".into()))?;
+        ck.cross_check_end_entity_cert(Some(checked_name))?;
         self.by_name
             .insert(name.into(), Arc::new(ck));
         Ok(())
@@ -193,17 +195,11 @@ impl ServerCertResolverUsingSniWithMutInterior {
     ///
     /// Note `&self` as first argument because of interior (only) mutability.
     pub fn add(&self, name: &str, ck: sign::CertifiedKey) -> Result<(), Error> {
-        crosscheck(name, &ck)?;
-
         let mut resolver = self
             .mut_interior
             .write()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        resolver
-            .by_name
-            .insert(name.into(), Arc::new(ck));
-
-        Ok(())
+        resolver.add(name, ck)
     }
 
     /// Remove the `rustls::sign::CertifiedKey` given by `name` from the
@@ -230,13 +226,6 @@ impl server::ResolvesServerCert for ServerCertResolverUsingSniWithMutInterior {
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         resolver.resolve(client_hello)
     }
-}
-
-fn crosscheck(name: &str, ck: &sign::CertifiedKey) -> Result<(), Error> {
-    let checked_name = webpki::DnsNameRef::try_from_ascii_str(name)
-        .map_err(|_| Error::General("Bad DNS name".into()))?;
-    ck.cross_check_end_entity_cert(Some(checked_name))?;
-    Ok(())
 }
 
 #[cfg(test)]
