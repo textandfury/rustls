@@ -5,8 +5,9 @@ use crate::server;
 use crate::server::ClientHello;
 use crate::sign;
 
+use parking_lot::{Mutex, RwLock};
 use std::collections;
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::Arc;
 
 /// Something which never stores sessions.
 pub struct NoServerSessionStorage {}
@@ -43,23 +44,16 @@ impl ServerSessionMemoryCache {
 
 impl server::StoresServerSessions for ServerSessionMemoryCache {
     fn put(&self, key: Vec<u8>, value: Vec<u8>) -> bool {
-        self.cache
-            .lock()
-            .unwrap()
-            .insert(key, value);
+        self.cache.lock().insert(key, value);
         true
     }
 
     fn get(&self, key: &[u8]) -> Option<Vec<u8>> {
-        self.cache
-            .lock()
-            .unwrap()
-            .get(key)
-            .cloned()
+        self.cache.lock().get(key).cloned()
     }
 
     fn take(&self, key: &[u8]) -> Option<Vec<u8>> {
-        self.cache.lock().unwrap().remove(key)
+        self.cache.lock().remove(key)
     }
 }
 
@@ -175,11 +169,11 @@ impl server::ResolvesServerCert for ResolvesServerCertUsingSni {
 /// Works almost like `ResolvesServerCertUsingSni` except it allows runtime
 /// modifications of its inner `sign::CertifiedKey` store using interior
 /// mutability.
-pub struct ServerCertResolverUsingSniWithMutInterior {
+pub struct SharedSniResolver {
     mut_interior: RwLock<ResolvesServerCertUsingSni>, // RwLock because reads >> writes
 }
 
-impl ServerCertResolverUsingSniWithMutInterior {
+impl SharedSniResolver {
     /// Create a new and empty (ie, knows no certificates) resolver.
     pub fn new() -> Self {
         Self {
@@ -195,11 +189,7 @@ impl ServerCertResolverUsingSniWithMutInterior {
     ///
     /// Note `&self` as first argument because of interior (only) mutability.
     pub fn add(&self, name: &str, ck: sign::CertifiedKey) -> Result<(), Error> {
-        let mut resolver = self
-            .mut_interior
-            .write()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        resolver.add(name, ck)
+        self.mut_interior.write().add(name, ck)
     }
 
     /// Remove the `rustls::sign::CertifiedKey` given by `name` from the
@@ -210,21 +200,18 @@ impl ServerCertResolverUsingSniWithMutInterior {
     ///
     /// Note `&self` as first argument because of interior (only) mutability.
     pub fn remove(&self, name: &str) -> Option<Arc<sign::CertifiedKey>> {
-        let mut resolver = self
-            .mut_interior
+        self.mut_interior
             .write()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        resolver.by_name.remove(name.into())
+            .by_name
+            .remove(name.into())
     }
 }
 
-impl server::ResolvesServerCert for ServerCertResolverUsingSniWithMutInterior {
+impl server::ResolvesServerCert for SharedSniResolver {
     fn resolve(&self, client_hello: ClientHello) -> Option<Arc<sign::CertifiedKey>> {
-        let resolver = self
-            .mut_interior
+        self.mut_interior
             .read()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        resolver.resolve(client_hello)
+            .resolve(client_hello)
     }
 }
 

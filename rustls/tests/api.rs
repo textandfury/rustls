@@ -2051,9 +2051,9 @@ fn sni_resolver_works() {
 }
 
 #[test]
-fn mut_interior_sni_resolver_works() {
+fn shared_sni_resolver_works() {
     let kt = KeyType::RSA;
-    let resolver = Arc::new(rustls::ServerCertResolverUsingSniWithMutInterior::new());
+    let resolver = Arc::new(rustls::SharedSniResolver::new());
     let signing_key = sign::RsaSigningKey::new(&kt.get_key()).unwrap();
     let signing_key: Arc<dyn sign::SigningKey> = Arc::new(signing_key);
 
