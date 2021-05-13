@@ -2088,15 +2088,11 @@ fn shared_sni_resolver_works() {
     );
 
     assert!(resolver.remove("localhost").is_some());
+
     let mut client3 =
         ClientConnection::new(&Arc::new(make_client_config(kt)), dns_name("localhost")).unwrap();
-    let err = do_handshake_until_error(&mut client3, &mut server1);
-    assert_eq!(err, Err(ErrorFromPeer::Server(Error::DecryptError)));
-
-    let mut client4 =
-        ClientConnection::new(&Arc::new(make_client_config(kt)), dns_name("localhost")).unwrap();
-    let mut server4 = ServerConnection::new(&server_config);
-    let err = do_handshake_until_error(&mut client4, &mut server4);
+    let mut server3 = ServerConnection::new(&server_config);
+    let err = do_handshake_until_error(&mut client3, &mut server3);
     assert_eq!(
         err,
         Err(ErrorFromPeer::Server(Error::General(
