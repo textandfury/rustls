@@ -187,7 +187,7 @@ impl SharedSniResolver {
     /// it's not valid for the supplied certificate, or if the certificate
     /// chain is syntactically faulty.
     ///
-    /// Note `&self` as first argument because of interior (only) mutability.
+    /// Note `&self` as first argument because of interior mutability.
     pub fn add(&self, name: &str, ck: sign::CertifiedKey) -> Result<(), Error> {
         self.mut_interior.write().add(name, ck)
     }
@@ -198,7 +198,9 @@ impl SharedSniResolver {
     /// `None` returned means no-op, while `Some(sign::CertifiedKey)` means
     /// that key was removed.
     ///
-    /// Note `&self` as first argument because of interior (only) mutability.
+    /// Note `&self` as first argument because of interior mutability.
+    ///
+    /// Caveat: cached connections to a removed host are left intact.
     pub fn remove(&self, name: &str) -> Option<Arc<sign::CertifiedKey>> {
         self.mut_interior
             .write()
