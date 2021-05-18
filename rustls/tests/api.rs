@@ -2163,15 +2163,15 @@ fn shared_sni_resolver_works() {
     server_config.cert_resolver = resolver.clone();
     let server_config = Arc::new(server_config);
 
-    let mut server1 = ServerConnection::new(&server_config);
+    let mut server1 = ServerConnection::new(server_config.clone()).unwrap();
     let mut client1 =
-        ClientConnection::new(&Arc::new(make_client_config(kt)), dns_name("localhost")).unwrap();
+        ClientConnection::new(Arc::new(make_client_config(kt)), dns_name("localhost")).unwrap();
     let err = do_handshake_until_error(&mut client1, &mut server1);
     assert_eq!(err, Ok(()));
 
-    let mut server2 = ServerConnection::new(&server_config);
+    let mut server2 = ServerConnection::new(server_config.clone()).unwrap();
     let mut client2 =
-        ClientConnection::new(&Arc::new(make_client_config(kt)), dns_name("notlocalhost")).unwrap();
+        ClientConnection::new(Arc::new(make_client_config(kt)), dns_name("notlocalhost")).unwrap();
     let err = do_handshake_until_error(&mut client2, &mut server2);
     assert_eq!(
         err,
@@ -2183,8 +2183,8 @@ fn shared_sni_resolver_works() {
     assert!(resolver.remove("localhost").is_some());
 
     let mut client3 =
-        ClientConnection::new(&Arc::new(make_client_config(kt)), dns_name("localhost")).unwrap();
-    let mut server3 = ServerConnection::new(&server_config);
+        ClientConnection::new(Arc::new(make_client_config(kt)), dns_name("localhost")).unwrap();
+    let mut server3 = ServerConnection::new(server_config).unwrap();
     let err = do_handshake_until_error(&mut client3, &mut server3);
     assert_eq!(
         err,
@@ -3345,14 +3345,12 @@ mod test_quic {
         server_config.alpn_protocols = vec!["foo".into()];
         let server_config = Arc::new(server_config);
 
-        assert!(
-            ServerConnection::new_quic(
-                server_config,
-                quic::Version::V1,
-                b"server params".to_vec(),
-            )
-            .is_err()
-        );
+        assert!(ServerConnection::new_quic(
+            server_config,
+            quic::Version::V1,
+            b"server params".to_vec(),
+        )
+        .is_err());
     }
 
     #[test]
