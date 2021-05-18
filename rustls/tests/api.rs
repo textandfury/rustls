@@ -19,6 +19,7 @@ use rustls::ConfigBuilder;
 use rustls::Connection;
 use rustls::Error;
 use rustls::KeyLog;
+use rustls::SafeDefaultClientVerifier;
 use rustls::WebPkiOp;
 use rustls::{CipherSuite, ProtocolVersion, SignatureScheme};
 use rustls::{ClientConfig, ClientConnection, ResolvesClientCert};
@@ -765,6 +766,101 @@ fn client_auth_works() {
             let (mut client, mut server) =
                 make_pair_for_arc_configs(&Arc::new(client_config), &server_config);
             do_handshake(&mut client, &mut server);
+        }
+    }
+}
+
+#[test]
+fn safe_default_client_auth_works() {
+    for kt in ALL_KEY_TYPES.iter() {
+        let safe_default_verifier = SafeDefaultClientVerifier::new();
+        let verifier_handle = Arc::clone(&safe_default_verifier);
+        let safe_default_server_config = ConfigBuilder::with_safe_defaults()
+            .for_server()
+            .unwrap()
+            .with_client_cert_verifier(safe_default_verifier)
+            .with_single_cert(kt.get_chain(), kt.get_key())
+            .unwrap();
+        let safe_default_server_config = Arc::new(safe_default_server_config);
+
+        for client_config in AllClientVersions::new(make_client_config(*kt)) {
+            let (mut client, mut server) = make_pair_for_arc_configs(
+                &Arc::new(client_config.clone()),
+                &safe_default_server_config,
+            );
+            let err = do_handshake_until_error(&mut client, &mut server);
+            assert_eq!(
+                err,
+                Err(ErrorFromPeer::Server(Error::NoCertificatesPresented))
+            );
+        }
+
+        verifier_handle.serve_anonymous_clients();
+
+        for client_config in AllClientVersions::new(make_client_config(*kt)) {
+            let (mut client, mut server) = make_pair_for_arc_configs(
+                &Arc::new(client_config.clone()),
+                &safe_default_server_config,
+            );
+            let err = do_handshake_until_error(&mut client, &mut server);
+            assert_eq!(err, Ok(()));
+        }
+
+        verifier_handle.serve_only_authenticated_clients();
+
+        let trusteds = kt.get_chain();
+        for trusted in trusteds {
+            assert!(
+                verifier_handle
+                    .add_trusted_root_ca(&trusted)
+                    .unwrap()
+                    .is_ok()
+            );
+        }
+
+        for client_config in AllClientVersions::new(make_client_config_with_auth(*kt)) {
+            let (mut client, mut server) = make_pair_for_arc_configs(
+                &Arc::new(client_config.clone()),
+                &safe_default_server_config,
+            );
+            let err = do_handshake_until_error(&mut client, &mut server);
+            assert_eq!(err, Ok(()));
+        }
+
+        assert_eq!(verifier_handle.reset_root_cert_store(), true);
+
+        for client_config in AllClientVersions::new(make_client_config_with_auth(*kt)) {
+            let (mut client, mut server) = make_pair_for_arc_configs(
+                &Arc::new(client_config.clone()),
+                &safe_default_server_config,
+            );
+            let err = do_handshake_until_error(&mut client, &mut server);
+            assert_eq!(
+                err,
+                Err(ErrorFromPeer::Server(Error::WebPkiError(
+                    webpki::Error::UnknownIssuer,
+                    WebPkiOp::ValidateClientCert,
+                )))
+            );
+        }
+
+        let trusteds = kt.get_chain();
+        for trusted in trusteds {
+            assert!(
+                verifier_handle
+                    .add_trusted_root_ca(&trusted)
+                    .unwrap()
+                    .is_ok()
+            );
+        }
+
+        for client_config in AllClientVersions::new(make_client_config_with_auth(*kt)) {
+            let (mut client, mut server) = make_pair_for_arc_configs(
+                &Arc::new(client_config.clone()),
+                &safe_default_server_config,
+            );
+            let err = do_handshake_until_error(&mut client, &mut server);
+            assert_eq!(err, Ok(()));
         }
     }
 }

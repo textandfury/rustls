@@ -1,3 +1,7 @@
+use parking_lot::RwLock;
+use ring::digest::Digest;
+use std::convert::TryFrom;
+use std::ops::{Deref, DerefMut};
 use std::sync::Arc;
 use std::time::SystemTime;
 
@@ -10,9 +14,6 @@ use crate::key::Certificate;
 use crate::log::{debug, trace, warn};
 use crate::msgs::enums::SignatureScheme;
 use crate::msgs::handshake::DigitallySignedStruct;
-
-use ring::digest::Digest;
-use std::convert::TryFrom;
 
 type SignatureAlgorithms = &'static [&'static webpki::SignatureAlgorithm];
 
@@ -242,7 +243,6 @@ pub trait ClientCertVerifier: Send + Sync {
         verify_signed_struct(message, cert, dss)
     }
 
-
     /// Verify a signature allegedly by the given server certificate.
     ///
     /// This method is only called for TLS1.3 handshakes.
@@ -430,56 +430,6 @@ impl ClientCertVerifier for AllowAnyAuthenticatedClient {
     }
 }
 
-/// A `ClientCertVerifier` that will allow both anonymous and authenticated
-/// clients, without any name checking.
-///
-/// Client authentication will be requested during the TLS handshake. If the
-/// client offers a certificate then this acts like
-/// `AllowAnyAuthenticatedClient`, otherwise this acts like `NoClientAuth`.
-pub struct AllowAnyAnonymousOrAuthenticatedClient {
-    inner: AllowAnyAuthenticatedClient,
-}
-
-impl AllowAnyAnonymousOrAuthenticatedClient {
-    /// Construct a new `AllowAnyAnonymousOrAuthenticatedClient`.
-    ///
-    /// `roots` is the list of trust anchors to use for certificate validation.
-    pub fn new(roots: RootCertStore) -> Arc<dyn ClientCertVerifier> {
-        Arc::new(AllowAnyAnonymousOrAuthenticatedClient {
-            inner: AllowAnyAuthenticatedClient { roots },
-        })
-    }
-}
-
-impl ClientCertVerifier for AllowAnyAnonymousOrAuthenticatedClient {
-    fn offer_client_auth(&self) -> bool {
-        self.inner.offer_client_auth()
-    }
-
-    fn client_auth_mandatory(&self, _sni: Option<&webpki::DnsName>) -> Option<bool> {
-        Some(false)
-    }
-
-    fn client_auth_root_subjects(
-        &self,
-        sni: Option<&webpki::DnsName>,
-    ) -> Option<DistinguishedNames> {
-        self.inner
-            .client_auth_root_subjects(sni)
-    }
-
-    fn verify_client_cert(
-        &self,
-        end_entity: &Certificate,
-        intermediates: &[Certificate],
-        sni: Option<&webpki::DnsName>,
-        now: SystemTime,
-    ) -> Result<ClientCertVerified, Error> {
-        self.inner
-            .verify_client_cert(end_entity, intermediates, sni, now)
-    }
-}
-
 /// Turns off client authentication.
 pub struct NoClientAuth;
 
@@ -510,6 +460,200 @@ impl ClientCertVerifier for NoClientAuth {
         _now: SystemTime,
     ) -> Result<ClientCertVerified, Error> {
         unimplemented!();
+    }
+}
+
+enum ClientCertVerifyMode {
+    AllowAnyClient,
+    MustVerifyClientCert(AllowAnyAuthenticatedClient),
+}
+
+/// A `ClientVerifier` impl which can be set to allow anonymous clients
+/// but will reject anonymous clients when set to verify them.
+///
+/// In the case of `AllowAnyAnonymousOrAuthenticatedClient` (which will
+/// accept anonymous clients while verifying others who present their
+/// client certificate), a client rejected for presenting a bad certificate
+/// can then turn anonymous and be served.
+pub struct SafeDefaultClientVerifier {
+    mode: RwLock<ClientCertVerifyMode>,
+}
+
+impl SafeDefaultClientVerifier {
+    /// Creates a new `SafeDefaultClientVerifier` and wraps it in an Arc.
+    pub fn new() -> Arc<Self> {
+        Arc::new(Self {
+            mode: RwLock::new(ClientCertVerifyMode::MustVerifyClientCert(
+                AllowAnyAuthenticatedClient {
+                    roots: RootCertStore::empty(),
+                },
+            )),
+        })
+    }
+
+    /// Drop the list of acceptable client certificates and start serving
+    /// all clients.
+    ///
+    /// This is a mutating operation managed by interior mutability (mutex).
+    pub fn serve_anonymous_clients(&self) {
+        *self.mode.write() = ClientCertVerifyMode::AllowAnyClient;
+    }
+
+    /// If currently serving anonymous clients, start serving only
+    /// authenticated clients. Otherwise, no-op.
+    ///
+    /// This is possibly a mutating operation managed by interior mutability
+    /// (mutex).
+    pub fn serve_only_authenticated_clients(&self) {
+        let mut mode = self.mode.write();
+        match mode.deref() {
+            ClientCertVerifyMode::AllowAnyClient => {
+                *mode = ClientCertVerifyMode::MustVerifyClientCert(AllowAnyAuthenticatedClient {
+                    roots: RootCertStore::empty(),
+                });
+            }
+            ClientCertVerifyMode::MustVerifyClientCert(_) => {}
+        };
+    }
+
+    /// Returns true if currently serving anonymous clients or if currently
+    /// serving authenticated clients but no client certificate has been
+    /// stored.
+    pub fn is_cert_store_empty(&self) -> bool {
+        match self.mode.read().deref() {
+            ClientCertVerifyMode::AllowAnyClient => true,
+            ClientCertVerifyMode::MustVerifyClientCert(verifier) => verifier.roots.is_empty(),
+        }
+    }
+
+    /// Returns the number of client certificates stored in the underlying
+    /// certificate store. Returns 0 if currently serving anonymous clients.
+    pub fn root_cert_store_len(&self) -> usize {
+        match self.mode.read().deref() {
+            ClientCertVerifyMode::AllowAnyClient => 0,
+            ClientCertVerifyMode::MustVerifyClientCert(verifier) => verifier.roots.len(),
+        }
+    }
+
+    /// Returns the list of Subject Names in the underlying certificate
+    /// store if currently serving authenticated clients. Otherwise,
+    /// returns None.
+    pub fn root_cert_store_subjects(&self) -> Option<DistinguishedNames> {
+        match self.mode.read().deref() {
+            ClientCertVerifyMode::AllowAnyClient => None,
+            ClientCertVerifyMode::MustVerifyClientCert(verifier) => Some(verifier.roots.subjects()),
+        }
+    }
+
+    /// Adds a trusted client certificate to the underlying `RootCertStore`
+    /// if currently serving only authenticated clients. Otherwise, no-op
+    /// and None returned.
+    ///
+    /// This is possibly a mutating operation managed by interior mutability
+    /// (mutex).
+    pub fn add_trusted_root_ca(&self, der: &Certificate) -> Option<Result<(), webpki::Error>> {
+        match self.mode.write().deref_mut() {
+            ClientCertVerifyMode::AllowAnyClient => None,
+            ClientCertVerifyMode::MustVerifyClientCert(verifier) => Some(verifier.roots.add(der)),
+        }
+    }
+
+    /// Adds all the given TrustAnchors `anchors` and returns true if
+    /// currently serving only authenticated clients. Otherwise, no-op and
+    /// false returned.
+    ///
+    /// This is possibly a mutating operation managed by interior mutability
+    /// (mutex).
+    pub fn add_server_trust_anchors(
+        &self,
+        &webpki::TlsServerTrustAnchors(anchors): &webpki::TlsServerTrustAnchors,
+    ) -> bool {
+        match self.mode.write().deref_mut() {
+            ClientCertVerifyMode::AllowAnyClient => false,
+            ClientCertVerifyMode::MustVerifyClientCert(verifier) => {
+                verifier
+                    .roots
+                    .add_server_trust_anchors(&webpki::TlsServerTrustAnchors(anchors));
+                true
+            }
+        }
+    }
+
+    /// Parses the given DER-encoded certificates and add all that can be parsed
+    /// to the underlying authenticated client certificate store
+    /// in a best-effort fashion if currently serving only authenticated clients.
+    ///
+    /// This is because large collections of root certificates often
+    /// include ancient or syntactically invalid certificates.
+    ///
+    /// Returns the number of certificates added, and the number that were ignored
+    /// wrapped inside `Some`. If currently serving anonymous clients, returns
+    /// `None` and the function is a no-op.
+    ///
+    /// This is possibly a mutating operation managed by interior mutability
+    /// (mutex).
+    pub fn batch_add_certificates(&self, der_certs: &[Vec<u8>]) -> Option<(usize, usize)> {
+        match self.mode.write().deref_mut() {
+            ClientCertVerifyMode::AllowAnyClient => None,
+            ClientCertVerifyMode::MustVerifyClientCert(verifier) => Some(
+                verifier
+                    .roots
+                    .add_parsable_certificates(der_certs),
+            ),
+        }
+    }
+
+    /// Empties the underlying `RootCertStore` and returns true if currently
+    /// serving only authenticated clients. Otherwise, returns false and
+    /// does nothing.
+    pub fn reset_root_cert_store(&self) -> bool {
+        match self.mode.write().deref_mut() {
+            ClientCertVerifyMode::AllowAnyClient => false,
+            ClientCertVerifyMode::MustVerifyClientCert(verifier) => {
+                verifier.roots = RootCertStore::empty();
+                true
+            }
+        }
+    }
+}
+
+impl ClientCertVerifier for SafeDefaultClientVerifier {
+    fn offer_client_auth(&self) -> bool {
+        match self.mode.read().deref() {
+            ClientCertVerifyMode::AllowAnyClient => false,
+            ClientCertVerifyMode::MustVerifyClientCert(_) => true,
+        }
+    }
+
+    fn client_auth_mandatory(&self, _sni: Option<&webpki::DnsName>) -> Option<bool> {
+        Some(self.offer_client_auth())
+    }
+
+    fn client_auth_root_subjects(
+        &self,
+        _sni: Option<&webpki::DnsName>,
+    ) -> Option<DistinguishedNames> {
+        match self.mode.read().deref() {
+            ClientCertVerifyMode::AllowAnyClient => unimplemented!(),
+            ClientCertVerifyMode::MustVerifyClientCert(strict_verifier) => {
+                Some(strict_verifier.roots.subjects())
+            }
+        }
+    }
+
+    fn verify_client_cert(
+        &self,
+        end_entity: &Certificate,
+        intermediates: &[Certificate],
+        sni: Option<&webpki::DnsName>,
+        now: SystemTime,
+    ) -> Result<ClientCertVerified, Error> {
+        match self.mode.read().deref() {
+            ClientCertVerifyMode::AllowAnyClient => unimplemented!(),
+            ClientCertVerifyMode::MustVerifyClientCert(strict_verifier) => {
+                strict_verifier.verify_client_cert(end_entity, intermediates, sni, now)
+            }
+        }
     }
 }
 
@@ -629,7 +773,6 @@ fn verify_tls13(
     dss: &DigitallySignedStruct,
 ) -> Result<HandshakeSignatureValid, Error> {
     let alg = convert_alg_tls13(dss.scheme)?;
-
 
     let cert = webpki::EndEntityCert::try_from(cert.0.as_ref())
         .map_err(|e| Error::WebPkiError(e, WebPkiOp::ParseEndEntity))?;

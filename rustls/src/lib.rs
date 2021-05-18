@@ -317,9 +317,7 @@ pub use crate::suites::{
     BulkAlgorithm, SupportedCipherSuite, ALL_CIPHERSUITES, DEFAULT_CIPHERSUITES,
 };
 pub use crate::ticketer::Ticketer;
-pub use crate::verify::{
-    AllowAnyAnonymousOrAuthenticatedClient, AllowAnyAuthenticatedClient, NoClientAuth,
-};
+pub use crate::verify::{AllowAnyAuthenticatedClient, NoClientAuth, SafeDefaultClientVerifier};
 pub use crate::versions::{SupportedProtocolVersion, ALL_VERSIONS, DEFAULT_VERSIONS};
 
 /// All defined ciphersuites appear in this module.
