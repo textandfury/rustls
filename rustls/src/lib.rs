@@ -13,7 +13,7 @@
 //! * ChaCha20-Poly1305 bulk encryption ([RFC7905](https://tools.ietf.org/html/rfc7905)).
 //! * ALPN support.
 //! * SNI support.
-//! * Tunable MTU to make TLS messages match size of underlying transport.
+//! * Tunable fragment size to make TLS messages match size of underlying transport.
 //! * Optional use of vectored IO to minimise system calls.
 //! * TLS1.2 session resumption.
 //! * TLS1.2 resumption via tickets ([RFC5077](https://tools.ietf.org/html/rfc5077)).
@@ -130,7 +130,7 @@
 //! #     .with_no_client_auth();
 //! let rc_config = Arc::new(config);
 //! let example_com = webpki::DnsNameRef::try_from_ascii_str("example.com").unwrap();
-//! let mut client = rustls::ClientConnection::new(&rc_config, example_com);
+//! let mut client = rustls::ClientConnection::new(rc_config, example_com);
 //! ```
 //!
 //! Now you should do appropriate IO for the `client` object.  If `client.wants_read()` yields
@@ -206,6 +206,7 @@
 // Require docs for public APIs, deny unsafe code, etc.
 #![forbid(unsafe_code, unused_must_use, unstable_features)]
 #![deny(
+    clippy::clone_on_ref_ptr,
     trivial_casts,
     trivial_numeric_casts,
     missing_docs,

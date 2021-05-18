@@ -9,7 +9,7 @@ use crate::msgs::codec::Codec;
 use crate::msgs::deframer::MessageDeframer;
 use crate::msgs::enums::HandshakeType;
 use crate::msgs::enums::{AlertDescription, AlertLevel, ContentType, ProtocolVersion};
-use crate::msgs::fragmenter::{MessageFragmenter, MAX_FRAGMENT_LEN};
+use crate::msgs::fragmenter::MessageFragmenter;
 use crate::msgs::hsjoiner::HandshakeJoiner;
 use crate::msgs::message::{BorrowedOpaqueMessage, Message, MessagePayload, OpaqueMessage};
 use crate::prf;
@@ -220,13 +220,15 @@ pub trait Connection: quic::QuicExt + Send + Sync {
     /// second certifies the first, the third certifies the second, and
     /// so on.
     ///
+    /// This is made available for both full and resumed handshakes.
+    ///
     /// For clients, this is the certificate chain of the server.
     ///
     /// For servers, this is the certificate chain of the client,
     /// if client authentication was completed.
     ///
     /// The return value is None until this value is available.
-    fn peer_certificates(&self) -> Option<Vec<key::Certificate>>;
+    fn peer_certificates(&self) -> Option<&[key::Certificate]>;
 
     /// Retrieves the protocol agreed with the peer via ALPN.
     ///
@@ -573,8 +575,8 @@ pub struct ConnectionCommon {
 }
 
 impl ConnectionCommon {
-    pub fn new(mtu: Option<usize>, client: bool) -> ConnectionCommon {
-        ConnectionCommon {
+    pub fn new(max_fragment_size: Option<usize>, client: bool) -> Result<ConnectionCommon, Error> {
+        Ok(ConnectionCommon {
             negotiated_version: None,
             is_client: client,
             record_layer: record_layer::RecordLayer::new(),
@@ -588,14 +590,15 @@ impl ConnectionCommon {
             error: None,
             message_deframer: MessageDeframer::new(),
             handshake_joiner: HandshakeJoiner::new(),
-            message_fragmenter: MessageFragmenter::new(mtu.unwrap_or(MAX_FRAGMENT_LEN)),
+            message_fragmenter: MessageFragmenter::new(max_fragment_size)
+                .map_err(|_| Error::BadMaxFragmentSize)?,
             received_plaintext: ChunkVecBuffer::new(),
             sendable_plaintext: ChunkVecBuffer::new(),
             sendable_tls: ChunkVecBuffer::new(),
             protocol: Protocol::Tcp,
             #[cfg(feature = "quic")]
             quic: Quic::new(),
-        }
+        })
     }
 
     pub fn reader(&mut self) -> Reader {
@@ -665,7 +668,6 @@ impl ConnectionCommon {
         &mut self,
         state: &mut Option<S>,
         data: &mut S::Data,
-        config: &S::Config,
     ) -> Result<IoState, Error> {
         if let Some(ref err) = self.error {
             return Err(err.clone());
@@ -680,11 +682,9 @@ impl ConnectionCommon {
                 .process_msg(msg)
                 .and_then(|val| match val {
                     Some(MessageType::Handshake) => {
-                        self.process_new_handshake_messages(state, data, config)
+                        self.process_new_handshake_messages(state, data)
                     }
-                    Some(MessageType::Data(msg)) => {
-                        self.process_main_protocol(msg, state, data, config)
-                    }
+                    Some(MessageType::Data(msg)) => self.process_main_protocol(msg, state, data),
                     None => Ok(()),
                 });
 
@@ -701,10 +701,9 @@ impl ConnectionCommon {
         &mut self,
         state: &mut Option<S>,
         data: &mut S::Data,
-        config: &S::Config,
     ) -> Result<(), Error> {
         while let Some(msg) = self.handshake_joiner.frames.pop_front() {
-            self.process_main_protocol(msg, state, data, &config)?;
+            self.process_main_protocol(msg, state, data)?;
         }
 
         Ok(())
@@ -718,7 +717,6 @@ impl ConnectionCommon {
         msg: Message,
         state: &mut Option<S>,
         data: &mut S::Data,
-        config: &S::Config,
     ) -> Result<(), Error> {
         // For TLS1.2, outside of the handshake, send rejection alerts for
         // renegotiation requests.  These can occur any time.
@@ -734,7 +732,7 @@ impl ConnectionCommon {
         }
 
         let current = state.take().unwrap();
-        match current.handle(msg, data, self, config) {
+        match current.handle(msg, data, self) {
             Ok(next) => {
                 *state = Some(next);
                 Ok(())
@@ -1082,14 +1080,12 @@ impl ConnectionCommon {
 
 pub(crate) trait HandleState: Sized {
     type Data;
-    type Config;
 
     fn handle(
         self,
         message: Message,
         data: &mut Self::Data,
         common: &mut ConnectionCommon,
-        config: &Self::Config,
     ) -> Result<Self, Error>;
 }
 
