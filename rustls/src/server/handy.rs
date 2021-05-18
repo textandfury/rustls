@@ -200,7 +200,7 @@ impl SharedSniResolver {
     ///
     /// This is a mutating operation managed by interior mutability (mutex).
     ///
-    /// Caveat: cached connections to a removed host are left intact.
+    /// Caveat: cached handshakes with a removed host are left intact.
     pub fn remove(&self, name: &str) -> Option<Arc<sign::CertifiedKey>> {
         self.mut_interior
             .write()

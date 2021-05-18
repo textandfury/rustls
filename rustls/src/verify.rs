@@ -606,6 +606,12 @@ impl SafeDefaultClientVerifier {
     /// Empties the underlying `RootCertStore` and returns true if currently
     /// serving only authenticated clients. Otherwise, returns false and
     /// does nothing.
+    ///
+    /// Caveat: cached handshakes using a previously trusted client may be
+    /// left intact.
+    ///
+    /// This is possibly a mutating operation managed by interior mutability
+    /// (mutex).
     pub fn reset_root_cert_store(&self) -> bool {
         match self.mode.write().deref_mut() {
             ClientCertVerifyMode::AllowAnyClient => false,
